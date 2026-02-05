@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Keep data directories but not contents
+data/paper-trades-scalp/*.json
+data/paper-trades-swing/*.json
+data/models/*.txt
+data/models/*.json
+!data/paper-trades-scalp/.gitkeep
+!data/paper-trades-swing/.gitkeep
+!data/models/.gitkeep

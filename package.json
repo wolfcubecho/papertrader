@@ -1,0 +1,24 @@
+{
+  "name": "crypto-paper-traders",
+  "version": "1.0.0",
+  "description": "Structure-based crypto paper traders (scalp + swing)",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "scalp": "node dist/multi-coin-paper-trader-scalp.js",
+    "swing": "node dist/multi-coin-paper-trader-swing.js",
+    "start": "npm run scalp",
+    "start:both": "concurrently \"npm run scalp\" \"npm run swing\""
+  },
+  "dependencies": {
+    "binance-api-node": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "concurrently": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
