@@ -117,6 +117,53 @@ const CONFIG = {
   maxBackupsPerSymbol: 24,
 };
 
+// ═══════════════════════════════════════════════════════════════
+// STRUCTURE-BASED STOPS - Find swing highs/lows
+// ═══════════════════════════════════════════════════════════════
+
+interface SwingPoints {
+  swingHigh: number | null;
+  swingLow: number | null;
+}
+
+function findSwingPoints(candles: Candle[], lookback: number = 5): SwingPoints {
+  let swingHigh: number | null = null;
+  let swingLow: number | null = null;
+
+  const len = candles.length;
+  if (len < lookback * 2 + 1) {
+    return { swingHigh: null, swingLow: null };
+  }
+
+  // Search backwards from most recent candle
+  for (let i = len - lookback - 1; i >= lookback; i--) {
+    const high = candles[i].high;
+    const low = candles[i].low;
+
+    let isSwingHigh = true;
+    let isSwingLow = true;
+
+    for (let j = i - lookback; j <= i + lookback; j++) {
+      if (j === i) continue;
+      if (candles[j].high >= high) isSwingHigh = false;
+      if (candles[j].low <= low) isSwingLow = false;
+    }
+
+    if (isSwingHigh && swingHigh === null) {
+      swingHigh = high;
+    }
+    if (isSwingLow && swingLow === null) {
+      swingLow = low;
+    }
+
+    if (swingHigh !== null && swingLow !== null) {
+      break;
+    }
+  }
+
+  return { swingHigh, swingLow };
+}
+
 interface PaperTrade {
   id: string;
   symbol: string;
@@ -680,16 +727,51 @@ class CoinTrader {
     const isLong = analysis.direction === 'LONG';
 
     const qualityInfo = this.calculateTradeQuality(analysis.smcScore, analysis.mlPrediction);
-    
+
+    // ═══════════════════════════════════════════════════════════════
+    // STRUCTURE-BASED STOPS: Use swing high/low instead of fixed ATR
+    // ═══════════════════════════════════════════════════════════════
+    const swingPoints = findSwingPoints(primaryTf.candles, 5);
+    let stopLoss: number;
+    let stopDistance: number;
+    let stopType = 'ATR';
+
+    if (isLong && swingPoints.swingLow) {
+      // LONG: Stop below recent swing low
+      stopLoss = swingPoints.swingLow * 0.998;  // Small buffer below
+      stopDistance = currentPrice - stopLoss;
+      stopType = 'SWING';
+    } else if (!isLong && swingPoints.swingHigh) {
+      // SHORT: Stop above recent swing high
+      stopLoss = swingPoints.swingHigh * 1.002;  // Small buffer above
+      stopDistance = stopLoss - currentPrice;
+      stopType = 'SWING';
+    } else {
+      // Fallback to ATR if no swing points found
+      stopDistance = currentATR * CONFIG.stopLossATRMultiple;
+      stopLoss = isLong ? currentPrice - stopDistance : currentPrice + stopDistance;
+    }
+
+    // Cap risk at max 5% to avoid huge positions with tight stops
+    const riskPct = (stopDistance / currentPrice) * 100;
+    if (riskPct > 5) {
+      console.log(`  ${this.state.symbol}: Skip - stop too far (${riskPct.toFixed(1)}% risk)`);
+      return;
+    }
+    if (riskPct < 0.3) {
+      console.log(`  ${this.state.symbol}: Skip - stop too tight (${riskPct.toFixed(2)}% risk)`);
+      return;
+    }
+
     const riskAmount = this.state.balance * (qualityInfo.riskPct / 100);
-    const stopDistance = currentATR * CONFIG.stopLossATRMultiple;
     const positionSize = riskAmount / stopDistance;
 
+    // Cap position to max leverage
+    const maxNotional = this.state.balance * CONFIG.leverage;
+    const notional = currentPrice * positionSize;
+    const cappedPositionSize = notional > maxNotional ? maxNotional / currentPrice : positionSize;
+
     const tpLevels = this.calculateTPLevels(stopDistance, qualityInfo);
-    
-    const stopLoss = isLong
-      ? currentPrice - stopDistance
-      : currentPrice + stopDistance;
     const takeProfit1 = isLong
       ? currentPrice + tpLevels.tp1
       : currentPrice - tpLevels.tp1;
@@ -711,8 +793,8 @@ class CoinTrader {
       takeProfit1,
       takeProfit2,
       takeProfit3,
-      originalPositionSize: positionSize,
-      currentPositionSize: positionSize,
+      originalPositionSize: cappedPositionSize,
+      currentPositionSize: cappedPositionSize,
       tp1Hit: false,
       tp2Hit: false,
       tp3Hit: false,
@@ -733,10 +815,10 @@ class CoinTrader {
                        qualityInfo.quality === 'medium' ? '✅' :
                        qualityInfo.quality === 'low' ? '⚠️' : '❌';
     
-    console.log(`\n🔔 ${this.state.symbol}: ENTERED ${trade.direction}!`);
-    console.log(`   Entry: $${trade.entryPrice.toFixed(2)} | SL: $${trade.stopLoss.toFixed(2)}`);
+    console.log(`\n🔔 ${this.state.symbol}: ENTERED ${trade.direction}! [${stopType} STOP]`);
+    console.log(`   Entry: $${trade.entryPrice.toFixed(2)} | SL: $${trade.stopLoss.toFixed(2)} (${riskPct.toFixed(1)}% risk)`);
     console.log(`   TP1: $${trade.takeProfit1.toFixed(2)} | TP2: $${trade.takeProfit2.toFixed(2)} | TP3: $${trade.takeProfit3.toFixed(2)}`);
-    console.log(`   Quality: ${qualityEmoji} ${qualityInfo.quality.toUpperCase()} (${qualityInfo.qualityScore}/100) | Risk: ${qualityInfo.riskPct.toFixed(1)}%`);
+    console.log(`   Quality: ${qualityEmoji} ${qualityInfo.quality.toUpperCase()} (${qualityInfo.qualityScore}/100)`);
     console.log(`   ML: ${(trade.mlPrediction * 100).toFixed(0)}% | SMC: ${trade.smcScore} | Size: ${trade.currentPositionSize.toFixed(6)}`);
     console.log(`   MTF: ${tfInfo}\n`);
   }
@@ -1024,7 +1106,7 @@ class MultiCoinOrchestrator {
     console.log(`  OTE Zone Entry:  ${CONFIG.requireOTEEntry ? '✓ Required (61.8-78.6% fib)' : '○ Optional'}`);
     console.log(`  Fresh OB:        ${CONFIG.requireFreshOB ? `✓ Required (max ${CONFIG.maxOBTestCount} tests)` : '○ Optional'}`);
     console.log(`  OB/FVG in OTE:   ${CONFIG.requireOBFVGConfluence ? '✓ Required' : '○ Optional'}`);
-    console.log(`  Stop Loss:       ${CONFIG.stopLossATRMultiple}x ATR`);
+    console.log(`  Stop Loss:       STRUCTURE (swing high/low, fallback ${CONFIG.stopLossATRMultiple}x ATR)`);
     console.log(`  Max Hold:        ${CONFIG.maxHoldHours}h`);
     console.log('');
 
