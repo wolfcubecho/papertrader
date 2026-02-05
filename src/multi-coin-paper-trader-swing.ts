@@ -16,7 +16,7 @@ import path from 'path';
 
 const require = createRequire(import.meta.url);
 const Binance = require('binance-api-node').default;
-import { Candle, SMCIndicators } from './smc-indicators.js';
+import { Candle, SMCIndicators, OrderBlock } from './smc-indicators.js';
 import { ICTIndicators } from './ict-indicators.js';
 import { FeatureExtractor, TradeFeatures } from './trade-features.js';
 import { UnifiedScoring } from './unified-scoring.js';
@@ -56,17 +56,26 @@ const CONFIG = {
   requireDailyAlignment: false,
   require15MAlignment: false,
 
+  // ═══════════════════════════════════════════════════════════════
+  // ICT ENTRY REQUIREMENTS (the key improvements)
+  // ═══════════════════════════════════════════════════════════════
+  requireDisplacement: true,     // Must have impulsive move before entry
+  requireOTEEntry: true,         // Price must be in 61.8-78.6% fib zone
+  requireFreshOB: true,          // OB must be untested (testCount <= 1)
+  requireOBFVGConfluence: false, // OB or FVG must overlap OTE (optional)
+  maxOBTestCount: 1,             // 0 = completely fresh, 1 = first retest (best)
+
   // Trade lifecycle
   // Forces exits so trades don't stall forever (useful for data collection)
-  maxHoldHours: 24,
+  maxHoldHours: 72,              // Up from 24h - let swing trades run
 
   // Risk management
   virtualBalancePerCoin: 10000,
   minRiskPct: 2,
   maxRiskPct: 15,
   leverage: 1,
-  stopLossATRMultiple: 1.0,
-  baseTakeProfitRR: 2.0,
+  stopLossATRMultiple: 2.0,      // Up from 1.0x - wider stops for swing
+  baseTakeProfitRR: 2.5,         // Up from 2.0 - better R:R
   
   // Dynamic risk & TP settings based on trade quality
   qualityThresholds: {
@@ -510,6 +519,60 @@ class CoinTrader {
     const ictAnalysis = tf4h.ictAnalysis;
     result.ictScore = ictAnalysis?.entryScore || 0;
 
+    // ═══════════════════════════════════════════════════════════════
+    // ICT ENTRY CRITERIA CHECKS
+    // ═══════════════════════════════════════════════════════════════
+    const entryCriteria = ictAnalysis?.entryCriteria;
+
+    // 1. Check for displacement (impulsive move)
+    if (CONFIG.requireDisplacement) {
+      const hasDisplacement = entryCriteria?.displacementPresent || false;
+      if (!hasDisplacement) {
+        result.reasons.push('❌ No displacement - waiting for impulse');
+        return result;
+      }
+      result.reasons.push('✓ Displacement confirmed');
+    }
+
+    // 2. Check if price is in OTE zone (61.8-78.6% fib)
+    if (CONFIG.requireOTEEntry) {
+      const inOTE = entryCriteria?.inOTEZone || false;
+      if (!inOTE) {
+        result.reasons.push('❌ Price not in OTE zone - waiting for pullback');
+        return result;
+      }
+      result.reasons.push('✓ Price in OTE zone');
+    }
+
+    // 3. Check for fresh Order Block
+    if (CONFIG.requireFreshOB) {
+      const smcAnalysis = tf4h.smcAnalysis;
+      const freshOBs = smcAnalysis?.orderBlocks?.filter((ob: OrderBlock) => {
+        const isFresh = (ob.testCount ?? 0) <= CONFIG.maxOBTestCount;
+        const rightDirection = (direction === 'LONG' && ob.type === 'bull') ||
+                              (direction === 'SHORT' && ob.type === 'bear');
+        const notInvalidated = ob.state !== 'INVALIDATED';
+        return isFresh && rightDirection && notInvalidated;
+      }) || [];
+
+      if (freshOBs.length === 0) {
+        result.reasons.push('❌ No fresh OB - waiting for untested zone');
+        return result;
+      }
+      const bestOB = freshOBs[0];
+      result.reasons.push(`✓ Fresh ${bestOB.type} OB (tested: ${bestOB.testCount ?? 0}x)`);
+    }
+
+    // 4. Check for OB/FVG confluence in OTE (optional)
+    if (CONFIG.requireOBFVGConfluence) {
+      const hasConfluence = entryCriteria?.obFvgConfluence || false;
+      if (!hasConfluence) {
+        result.reasons.push('❌ No OB/FVG in OTE zone');
+        return result;
+      }
+      result.reasons.push('✓ OB/FVG confluence in OTE');
+    }
+
     const currentPrice = tf4h.candles[tf4h.candles.length - 1].close;
     const features = FeatureExtractor.extractFeatures(
       tf4h.candles,
@@ -540,9 +603,7 @@ class CoinTrader {
           })()
         : `ML: ${(result.mlPrediction * 100).toFixed(0)}%`;
       result.reasons.push(thresholdInfo);
-      result.reasons.push(`SMC: ${result.smcScore}`);
-      result.reasons.push(`ICT: ${result.ictScore}`);
-      result.reasons.push('HTF aligned: Daily + 4h + 1h');
+      result.reasons.push(`SMC: ${result.smcScore} | ICT: ${result.ictScore}`);
     }
 
     return result;
@@ -954,9 +1015,18 @@ class MultiCoinOrchestrator {
   }
 
   async initialize(): Promise<void> {
-    console.log('\n╔═══════════════════════════════════════════════════════╗');
-    console.log(`║   MULTI-COIN PAPER TRADING - SWING MODE (${CONFIG.primaryInterval} Primary)   ║`);
-    console.log('╚═══════════════════════════════════════════════════════╝\n');
+    console.log('\n╔═══════════════════════════════════════════════════════════════╗');
+    console.log(`║   ICT SWING TRADER - ${CONFIG.primaryInterval} Primary (SMC/ICT Entry)            ║`);
+    console.log('╚═══════════════════════════════════════════════════════════════╝\n');
+
+    console.log('ICT Entry Requirements:');
+    console.log(`  Displacement:    ${CONFIG.requireDisplacement ? '✓ Required' : '○ Optional'}`);
+    console.log(`  OTE Zone Entry:  ${CONFIG.requireOTEEntry ? '✓ Required (61.8-78.6% fib)' : '○ Optional'}`);
+    console.log(`  Fresh OB:        ${CONFIG.requireFreshOB ? `✓ Required (max ${CONFIG.maxOBTestCount} tests)` : '○ Optional'}`);
+    console.log(`  OB/FVG in OTE:   ${CONFIG.requireOBFVGConfluence ? '✓ Required' : '○ Optional'}`);
+    console.log(`  Stop Loss:       ${CONFIG.stopLossATRMultiple}x ATR`);
+    console.log(`  Max Hold:        ${CONFIG.maxHoldHours}h`);
+    console.log('');
 
     const weightsFile = path.join(process.cwd(), 'data', 'models', 'model-weights.json');
     if (fs.existsSync(weightsFile)) {
