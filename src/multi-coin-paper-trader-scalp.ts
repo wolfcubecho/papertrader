@@ -1512,14 +1512,34 @@ async function main() {
             const latestFile = path.join(exportDir, files[0]);
             console.log(`   Training on: ${files[0]}`);
 
-            // Run walk-forward training (just on scalp data for now)
-            execSync(`python scripts/lightgbm_walkforward.py --input "${latestFile}"`, {
+            // Run walk-forward training and capture output
+            const trainOutput = execSync(`python scripts/lightgbm_walkforward.py --input "${latestFile}"`, {
               cwd,
-              stdio: 'pipe',
+              encoding: 'utf-8',
               timeout: 300000  // 5 min timeout
             });
 
-            console.log('   ✅ Model updated!\n');
+            // Parse and display key metrics from training output
+            const lines = trainOutput.split('\n');
+            let showOutput = false;
+            for (const line of lines) {
+              // Show summary lines
+              if (line.includes('WALK-FORWARD') ||
+                  line.includes('Optimal threshold') ||
+                  line.includes('Baseline PnL') ||
+                  line.includes('Filtered PnL') ||
+                  line.includes('Win rate') ||
+                  line.includes('Model saved') ||
+                  line.includes('improvement')) {
+                console.log(`   ${line.trim()}`);
+                showOutput = true;
+              }
+            }
+
+            if (!showOutput) {
+              console.log('   ✅ Training completed (no improvement over current model)');
+            }
+            console.log('');
           }
         } catch (e: any) {
           console.log(`   ⚠️ Learning failed: ${e.message?.slice(0, 50)}\n`);
