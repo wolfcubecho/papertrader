@@ -8,7 +8,9 @@
     "scalp": "node dist/multi-coin-paper-trader-scalp.js",
     "swing": "node dist/multi-coin-paper-trader-swing.js",
     "start": "npm run scalp",
-    "start:both": "concurrently \"npm run scalp\" \"npm run swing\""
+    "start:both": "concurrently \"npm run scalp\" \"npm run swing\"",
+    "export-paper-trades-scalp": "node dist/export-paper-trades-scalp-to-training.js",
+    "train": "npm run export-paper-trades-scalp && python scripts/lightgbm_walkforward.py --input data/h2o-training/paper_scalp_*.csv"
   },
   "dependencies": {
     "binance-api-node": "^0.12.0"

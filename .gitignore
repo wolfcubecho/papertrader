@@ -8,6 +8,8 @@ data/paper-trades-scalp/*.json
 data/paper-trades-swing/*.json
 data/models/*.txt
 data/models/*.json
+data/h2o-training/*.csv
 !data/paper-trades-scalp/.gitkeep
 !data/paper-trades-swing/.gitkeep
 !data/models/.gitkeep
+!data/h2o-training/.gitkeep

@@ -49,11 +49,13 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
-### 2. Install Python 3.10+ (for ML features)
+### 2. Install Python 3.10+ (REQUIRED for auto-learning)
 ```bash
 sudo apt install -y python3 python3-pip
 pip3 install pandas numpy scikit-learn lightgbm
 ```
+
+**Note:** The scalp trader auto-trains every 100 trades. Without Python + LightGBM installed, training will fail (but trading continues).
 
 ### 3. Clone and Setup
 ```bash
